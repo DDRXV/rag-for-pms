@@ -14,12 +14,14 @@ from pathlib import Path
 
 import pandas as pd
 from langchain_core.documents import Document
-from langchain_openai import OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_chroma import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+DEFAULT_CHAT_MODEL = "gpt-4o-mini"
 
 
 def get_keys() -> None:
@@ -59,6 +61,8 @@ def get_keys() -> None:
         os.environ["LANGCHAIN_PROJECT"] = "rag-for-pms"
         tracing_status = "LangSmith tracing enabled."
     else:
+        os.environ.pop("LANGCHAIN_TRACING_V2", None)
+        os.environ.pop("LANGCHAIN_API_KEY", None)
         print("LANGCHAIN_API_KEY is missing. LangSmith traces will be skipped for this run.")
         tracing_status = "LangSmith tracing skipped."
 
@@ -191,6 +195,31 @@ def show_results(results, question: str | None = None, max_chars: int = 200):
         .hide(axis="index")
     )
     return styled
+
+
+def generate_answer(
+    results,
+    question: str,
+    model: str = DEFAULT_CHAT_MODEL,
+) -> str:
+    """
+    Feed the retrieved chunks to an LLM and return its answer as a string.
+    results is the output of search(): a list of (Document, distance) tuples.
+    The LLM is told to answer strictly from the provided context and to say
+    it does not know if the context is missing the answer.
+    """
+    context = "\n\n---\n\n".join(doc.page_content for doc, _ in results)
+
+    system = (
+        "You answer questions using only the provided context. "
+        "If the context does not contain the answer, say so plainly. "
+        "Be concise. Include specific numbers and clauses when they exist."
+    )
+    user = f"Context:\n{context}\n\nQuestion: {question}"
+
+    llm = ChatOpenAI(model=model, temperature=0)
+    response = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+    return response.content.strip()
 
 
 def pretty_print_chunks(chunks, max_chars: int = 150, n: int = 5):
