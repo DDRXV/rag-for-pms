@@ -263,3 +263,195 @@ def pretty_print_chunks(chunks, max_chars: int = 150, n: int = 5):
         **{"text-align": "left", "white-space": "pre-wrap"},
     ).hide(axis="index")
     return styled
+
+
+# ---------------------------------------------------------------------------
+# Query translation helpers (Chapter 2)
+#
+# Each helper takes a user question and returns a transformed form of it or a
+# list of retrieved documents. The notebook cells that use these are thin
+# wrappers so the lesson is about the transformation, not the plumbing.
+# ---------------------------------------------------------------------------
+
+
+def _chat(model: str = DEFAULT_CHAT_MODEL, temperature: float = 0.0) -> ChatOpenAI:
+    return ChatOpenAI(model=model, temperature=temperature)
+
+
+def generate_query_variants(
+    question: str,
+    n: int = 3,
+    context: str | None = None,
+    model: str = DEFAULT_CHAT_MODEL,
+) -> list[str]:
+    """
+    Ask the LLM to rewrite one vague question into n specific sub-questions.
+    Returns a plain list of strings. Each variant targets a different angle
+    of the original question so the downstream retrieval covers more ground.
+
+    In production RAG, the rewriter always knows what product the questions
+    are about. Pass a short context string describing your corpus so the
+    rewrites reference your product by name instead of drifting into generic
+    software questions.
+    """
+    system = (
+        "You rewrite vague user questions into specific sub-questions that a "
+        "vector database can answer. Each sub-question targets a different "
+        "angle of the original. Use the product context when given, and "
+        "reference the product by name in every sub-question. Return exactly "
+        "the requested number of sub-questions, one per line, with no "
+        "numbering, no bullets, no preamble. Do not repeat the original "
+        "question."
+    )
+    context_block = f"Product context: {context}\n\n" if context else ""
+    user = (
+        f"{context_block}Original question: {question}\n\n"
+        f"Rewrite this into {n} specific sub-questions, one per line."
+    )
+    response = _chat(model=model, temperature=0.2).invoke(
+        [SystemMessage(content=system), HumanMessage(content=user)]
+    )
+    lines = [line.strip(" -\u2022\t") for line in response.content.splitlines()]
+    variants = [line for line in lines if line]
+    return variants[:n]
+
+
+def multi_query_search(
+    index,
+    question: str,
+    n: int = 3,
+    k: int = 3,
+    context: str | None = None,
+    model: str = DEFAULT_CHAT_MODEL,
+) -> tuple[list[str], list]:
+    """
+    Run multi-query retrieval. First asks the LLM to rewrite the question into
+    n sub-questions, then runs each sub-question against the vector store,
+    dedupes results by (source, preview) so the same chunk never shows up
+    twice, and returns the merged list sorted by best (lowest) distance.
+
+    Returns a tuple of (variants, merged_results) so the notebook can print
+    the rewrites and show the table in two clean cells.
+    """
+    variants = generate_query_variants(question, n=n, context=context, model=model)
+
+    seen: dict = {}
+    for variant in variants:
+        for doc, score in index.similarity_search_with_score(variant, k=k):
+            key = (doc.metadata.get("source", "unknown"), doc.page_content[:120])
+            existing = seen.get(key)
+            if existing is None or score < existing[1]:
+                seen[key] = (doc, float(score))
+
+    merged = sorted(seen.values(), key=lambda pair: pair[1])
+    return variants, merged
+
+
+def generate_hyde_doc(
+    question: str,
+    context: str | None = None,
+    model: str = DEFAULT_CHAT_MODEL,
+) -> str:
+    """
+    Ask the LLM to draft a short hypothetical answer to the question. The
+    answer is intentionally plausible and formatted like internal docs, so
+    its embedding lands near the real documents instead of near the user's
+    vague question.
+    """
+    system = (
+        "You write short hypothetical passages that sound like the internal "
+        "documentation of a software product. Given a user question, write "
+        "a two to three sentence passage that answers it as if you were "
+        "quoting a real help article. Use concrete words. Reference the "
+        "product by name when given. Do not hedge. Do not say you are "
+        "speculating."
+    )
+    context_block = f"Product context: {context}\n\n" if context else ""
+    user = f"{context_block}Question: {question}\n\nWrite the hypothetical passage."
+    response = _chat(model=model, temperature=0.2).invoke(
+        [SystemMessage(content=system), HumanMessage(content=user)]
+    )
+    return response.content.strip()
+
+
+def hyde_search(
+    index,
+    question: str,
+    k: int = 3,
+    context: str | None = None,
+    model: str = DEFAULT_CHAT_MODEL,
+):
+    """
+    Run HyDE retrieval. Generate a hypothetical answer, then search the vector
+    store using the hypothetical answer as the query. Returns a tuple of
+    (hypothetical_text, results) where results is a list of (Document, distance).
+    """
+    hypo = generate_hyde_doc(question, context=context, model=model)
+    return hypo, index.similarity_search_with_score(hypo, k=k)
+
+
+def decompose_question(
+    question: str,
+    n: int = 3,
+    model: str = DEFAULT_CHAT_MODEL,
+) -> list[str]:
+    """
+    Break a complex multi-part question into independent sub-questions that
+    can each be answered on their own. This is different from
+    generate_query_variants: decomposition is for genuinely complex questions
+    that contain multiple parts, not for vague questions that need rewording.
+    """
+    system = (
+        "You decompose complex multi-part questions into independent "
+        "sub-questions. Each sub-question should be answerable on its own, "
+        "without reading the others. Return exactly the requested number of "
+        "sub-questions, one per line, no numbering, no preamble."
+    )
+    user = (
+        f"Complex question: {question}\n\n"
+        f"Decompose into {n} independent sub-questions, one per line."
+    )
+    response = _chat(model=model, temperature=0.0).invoke(
+        [SystemMessage(content=system), HumanMessage(content=user)]
+    )
+    lines = [line.strip(" -\u2022\t") for line in response.content.splitlines()]
+    return [line for line in lines if line][:n]
+
+
+def stepback_question(question: str, model: str = DEFAULT_CHAT_MODEL) -> str:
+    """
+    Generate a single broader "step-back" version of the question. The
+    step-back version zooms out from the specific detail to the general topic,
+    which retrieves foundational context the LLM can use to answer the
+    original narrow question.
+    """
+    system = (
+        "You are given a narrow specific question. Rewrite it as one broader "
+        "question about the general topic or principle behind it. Return only "
+        "the rewritten question, with no preamble."
+    )
+    user = f"Narrow question: {question}\n\nBroader version:"
+    response = _chat(model=model, temperature=0.0).invoke(
+        [SystemMessage(content=system), HumanMessage(content=user)]
+    )
+    return response.content.strip()
+
+
+def show_queries(queries: list[str], title: str = "Generated queries"):
+    """
+    Pretty-print a list of query strings as a numbered pandas table. Used to
+    show multi-query rewrites, decomposition output, or any other list of
+    generated queries in a visual way that beats raw print().
+    """
+    df = pd.DataFrame(
+        [{"#": i + 1, "query": q} for i, q in enumerate(queries)]
+    )
+    styled = (
+        df.style.set_caption(title)
+        .set_properties(
+            subset=["query"],
+            **{"text-align": "left", "white-space": "pre-wrap"},
+        )
+        .hide(axis="index")
+    )
+    return styled
