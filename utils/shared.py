@@ -1619,20 +1619,28 @@ def _authoritative_biased_search(
     authoritative_sources: list[str] | None = None,
 ):
     """
-    Retrieve k results, but if any authoritative sources are named for the
-    question, fetch a wider pool first (k * 3) and promote authoritative
-    chunks to the top. This gives the loop a concrete second chance on the
-    retry step without changing the chunking, the embedding, or the index.
+    Retrieve k results. If any authoritative sources are named for the
+    question, fetch a much wider pool (k * 10) and filter down to only the
+    authoritative chunks, returning the top k by distance from those. This
+    guarantees the loop sees a focused authoritative context on retry, with
+    no stale documents or decoy FAQs mixed in.
+
+    This is a stricter bias than a soft re-ranking. The lesson of self-RAG
+    is that you can route retrieval away from sources that the grader flagged
+    as conflicting. Filtering is the cleanest expression of that idea.
+
+    If the wide pool somehow contains zero authoritative chunks (for example
+    because the question does not actually match the authoritative source
+    well), fall back to the wide pool so the pipeline still returns something.
     """
     if not authoritative_sources:
         return index.similarity_search_with_score(question, k=k)
 
-    wide = index.similarity_search_with_score(question, k=k * 3)
+    wide = index.similarity_search_with_score(question, k=max(k * 10, 20))
     auth = [(d, s) for d, s in wide if d.metadata.get("source") in authoritative_sources]
-    other = [(d, s) for d, s in wide if d.metadata.get("source") not in authoritative_sources]
-    # Prefer authoritative chunks first, then fill with the best of the rest.
-    merged = auth + other
-    return merged[:k]
+    if not auth:
+        return wide[:k]
+    return auth[:k]
 
 
 def build_self_rag_graph(
