@@ -325,19 +325,26 @@ def multi_query_search(
     model: str = DEFAULT_CHAT_MODEL,
 ) -> tuple[list[str], list]:
     """
-    Run multi-query retrieval. First asks the LLM to rewrite the question into
-    n sub-questions, then runs each sub-question against the vector store,
-    dedupes results by (source, preview) so the same chunk never shows up
-    twice, and returns the merged list sorted by best (lowest) distance.
+    Run multi-query retrieval. Generate n sub-questions with the LLM, then
+    retrieve k results for each sub-question AND for the original question.
+    Including the original query is the standard production pattern (see
+    LangChain MultiQueryRetriever): it guarantees multi-query never performs
+    worse than direct search. Results are deduped by (source, first 120 chars)
+    and sorted by best (lowest) distance.
 
-    Returns a tuple of (variants, merged_results) so the notebook can print
-    the rewrites and show the table in two clean cells.
+    Returns a tuple of (variants, merged_results) where variants is the list
+    of LLM rewrites (excluding the original), so the notebook can print the
+    rewrites and show the table in two clean cells.
     """
     variants = generate_query_variants(question, n=n, context=context, model=model)
 
     seen: dict = {}
-    for variant in variants:
-        for doc, score in index.similarity_search_with_score(variant, k=k):
+    # Query with both the original question and each variant. Including the
+    # original is what prevents the "multi-query drifted off-topic" failure
+    # mode, where every variant is tangential and the core direct hit never
+    # enters the result pool.
+    for q in [question, *variants]:
+        for doc, score in index.similarity_search_with_score(q, k=k):
             key = (doc.metadata.get("source", "unknown"), doc.page_content[:120])
             existing = seen.get(key)
             if existing is None or score < existing[1]:
