@@ -903,3 +903,205 @@ def show_route_scores(scores: dict):
     )
 
 # === end Chapter 3 helpers ===
+# ---------------------------------------------------------------------------
+# === Chapter 4 helpers ===
+#
+# Hybrid search combines BM25 keyword ranking with dense vector ranking and
+# fuses the two result lists with Reciprocal Rank Fusion. Everything below is
+# designed so the notebook cells stay short and the plumbing stays invisible.
+# ---------------------------------------------------------------------------
+
+
+def _bm25_tokenize(text: str) -> list[str]:
+    """
+    Lowercase the text and split on anything that is not a letter, digit, or
+    hyphen. Hyphens are kept inside tokens so identifiers like E-4012 and
+    SKU-7829 survive as single tokens. This matches how product teams
+    usually index error codes and SKUs for keyword search.
+    """
+    import re
+
+    return re.findall(r"[a-z0-9]+(?:-[a-z0-9]+)*", text.lower())
+
+
+def build_bm25_index(chunks: list) -> dict:
+    """
+    Build a BM25 keyword index over the given chunks. Returns a dict with
+    the fitted BM25Okapi object, the original chunks, and the tokenizer used
+    to build the index. The notebook passes this dict to bm25_search().
+
+    BM25 scores are higher for better matches, which is the opposite of the
+    FAISS L2 distance convention. The notebook keeps both conventions
+    visible so students see the difference, and hybrid_search normalizes
+    both into rank space before fusing.
+    """
+    from rank_bm25 import BM25Okapi
+
+    tokenized = [_bm25_tokenize(c.page_content) for c in chunks]
+    bm25 = BM25Okapi(tokenized)
+    print(f"Built BM25 index over {len(chunks)} chunks")
+    return {
+        "bm25": bm25,
+        "chunks": chunks,
+        "tokenize": _bm25_tokenize,
+    }
+
+
+def bm25_search(bm25_index: dict, question: str, k: int = 5) -> list:
+    """
+    Run a BM25 query and return the top k chunks as a list of
+    (Document, score) pairs. Higher score means a better keyword match.
+    The return shape mirrors search() so the notebook can feed BM25 results
+    through show_results() and generate_answer() the same way.
+    """
+    bm25 = bm25_index["bm25"]
+    chunks = bm25_index["chunks"]
+    tokenize = bm25_index["tokenize"]
+
+    scores = bm25.get_scores(tokenize(question))
+    ranked_indices = sorted(range(len(chunks)), key=lambda i: -scores[i])[:k]
+    return [(chunks[i], float(scores[i])) for i in ranked_indices]
+
+
+def reciprocal_rank_fusion(
+    ranked_lists: list[list],
+    k: int = 60,
+    weights: list[float] | None = None,
+) -> list:
+    """
+    Merge several ranked result lists into one list using Reciprocal Rank
+    Fusion. Each input list is a list of (Document, score) pairs already
+    sorted from best to worst. The RRF score for a document that appears at
+    rank r in a list is 1 / (k + r), summed across every list it appears in.
+    Higher total means better.
+
+    Documents are deduplicated across lists by (source, first 120 characters
+    of content). If weights is passed, each list's contribution is multiplied
+    by its weight, which is how alpha tuning in hybrid_search is implemented.
+    """
+    if weights is None:
+        weights = [1.0] * len(ranked_lists)
+    if len(weights) != len(ranked_lists):
+        raise ValueError("weights must have the same length as ranked_lists")
+
+    fused: dict = {}
+    for ranked, weight in zip(ranked_lists, weights):
+        for rank, (doc, _score) in enumerate(ranked, start=1):
+            key = (doc.metadata.get("source", "unknown"), doc.page_content[:120])
+            contribution = weight * (1.0 / (k + rank))
+            if key in fused:
+                existing_doc, existing_score = fused[key]
+                fused[key] = (existing_doc, existing_score + contribution)
+            else:
+                fused[key] = (doc, contribution)
+
+    return sorted(fused.values(), key=lambda pair: -pair[1])
+
+
+def hybrid_search(
+    vector_index,
+    bm25_index: dict,
+    question: str,
+    k: int = 5,
+    alpha: float = 0.5,
+    rrf_k: int = 60,
+    pool_size: int = 10,
+) -> list:
+    """
+    Run the question against both the vector index and the BM25 index,
+    retrieve pool_size candidates from each path, and fuse the two ranked
+    lists with Reciprocal Rank Fusion. Alpha sets the mix: alpha=1.0 is
+    pure vector, alpha=0.0 is pure BM25, alpha=0.5 is an even blend. The
+    pool_size parameter controls how many candidates each path contributes
+    before fusion, and k controls how many fused results come out the other
+    side.
+
+    Returns a list of (Document, rrf_score) pairs sorted by fused score,
+    descending. Higher rrf_score means the document ranked well across both
+    paths.
+    """
+    vector_ranked = vector_index.similarity_search_with_score(question, k=pool_size)
+    bm25_ranked = bm25_search(bm25_index, question, k=pool_size)
+
+    fused = reciprocal_rank_fusion(
+        [vector_ranked, bm25_ranked],
+        k=rrf_k,
+        weights=[alpha, 1.0 - alpha],
+    )
+    return fused[:k]
+
+
+def show_bm25_results(results, question: str | None = None, max_chars: int = 200):
+    """
+    Pretty-print a BM25 result list as a pandas table. BM25 scores are
+    rewards, not distances, so the gradient is flipped compared to
+    show_results: green is the highest score (best match) and red is the
+    lowest. Shape matches show_results so the notebook can place the two
+    tables side by side.
+    """
+    if question:
+        print(f"Question: {question}")
+
+    rows = []
+    for rank, (doc, score) in enumerate(results, start=1):
+        rows.append(
+            {
+                "rank": rank,
+                "source": doc.metadata.get("source", "unknown"),
+                "score": round(float(score), 3),
+                "preview": _clean_preview(doc.page_content, max_chars),
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    styled = (
+        df.style.background_gradient(
+            cmap="RdYlGn",
+            subset=["score"],
+        )
+        .set_properties(
+            subset=["preview"],
+            **{"text-align": "left", "white-space": "pre-wrap"},
+        )
+        .hide(axis="index")
+    )
+    return styled
+
+
+def show_hybrid_results(results, question: str | None = None, max_chars: int = 200):
+    """
+    Pretty-print a hybrid (RRF-fused) result list. RRF scores are small
+    positive numbers where higher is better, so the gradient goes green at
+    the top. The score column is formatted to four decimal places because
+    RRF values are typically in the 0.01 to 0.05 range.
+    """
+    if question:
+        print(f"Question: {question}")
+
+    rows = []
+    for rank, (doc, score) in enumerate(results, start=1):
+        rows.append(
+            {
+                "rank": rank,
+                "source": doc.metadata.get("source", "unknown"),
+                "rrf_score": round(float(score), 4),
+                "preview": _clean_preview(doc.page_content, max_chars),
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    styled = (
+        df.style.background_gradient(
+            cmap="RdYlGn",
+            subset=["rrf_score"],
+        )
+        .set_properties(
+            subset=["preview"],
+            **{"text-align": "left", "white-space": "pre-wrap"},
+        )
+        .hide(axis="index")
+    )
+    return styled
+
+
+# === end Chapter 4 helpers ===
