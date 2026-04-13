@@ -11,6 +11,15 @@ it later and see exactly what is happening.
 import os
 from pathlib import Path
 
+# Silence chromadb telemetry in case any stale chromadb install is still
+# present in the runtime. We do not use chromadb, but its telemetry module
+# fires on import and spams the notebook with posthog.capture errors when
+# the installed chromadb version is out of step with the installed posthog
+# version. Setting this env var before any import that might transitively
+# pull chromadb prevents those messages from ever appearing.
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+os.environ.setdefault("CHROMA_TELEMETRY_ENABLED", "False")
+
 import pandas as pd
 from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
