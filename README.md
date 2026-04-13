@@ -59,14 +59,48 @@ If you want to go deeper than notebooks, the cohort walks through building RAG i
 
 ## Want to run this locally
 
-You do not have to, but if you want to:
+You do not have to. Colab is the default path. But if you prefer to run in your own Jupyter environment (faster reruns, persistent state, easier debugging, works offline), here is how.
+
+### One time setup
 
 ```
 git clone https://github.com/DDRXV/rag-for-pms
 cd rag-for-pms
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+```
+
+Python 3.10 or newer. The venv keeps the dependencies isolated from your system Python.
+
+### API keys for local runs
+
+Colab secrets do not exist outside Colab. Instead, create a file called `.env.local` at the root of the repo with your keys:
+
+```
+OPENAI_API_KEY=sk-your-key-here
+LANGCHAIN_API_KEY=your-langsmith-key
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_PROJECT=rag-for-pms
+COHERE_API_KEY=your-cohere-key
+```
+
+`.env.local` is already in `.gitignore` so it will not get committed. If you do not have a LangSmith or Cohere key, leave them blank, the notebooks will still run (just without traces or rerank in the relevant chapters).
+
+Before running any notebook, load the env file into your shell:
+
+```
+set -a && source .env.local && set +a
+```
+
+Then launch Jupyter:
+
+```
 jupyter notebook chapters/
 ```
 
-The notebooks work the same way locally. You still need the three API keys, stored in a `.env` file instead of Colab secrets.
+Or if you prefer VS Code, just open the repo, pick the `.venv` kernel, and run the notebooks from inside the IDE.
+
+### How the notebook knows
+
+Each chapter starts with a Colab-vs-local check that does the right thing in each environment. In Colab it pip installs packages and clones the repo. Locally it skips both, assuming the venv is already set up. You do not have to change anything when switching between the two.

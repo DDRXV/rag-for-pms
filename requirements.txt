@@ -1,11 +1,10 @@
 langchain==0.3.14
 langchain-openai==0.2.14
 langchain-community==0.3.14
-langchain-chroma==0.1.4
 langchain-text-splitters==0.3.5
 langgraph==0.2.61
 langsmith==0.2.6
-chromadb==0.5.23
+faiss-cpu==1.13.2
 openai==1.58.1
 pypdf==5.1.0
 rank-bm25==0.2.2

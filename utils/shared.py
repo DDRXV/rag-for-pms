@@ -9,14 +9,13 @@ it later and see exactly what is happening.
 """
 
 import os
-import uuid
 from pathlib import Path
 
 import pandas as pd
 from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_chroma import Chroma
+from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 
@@ -118,9 +117,9 @@ def build_index(
 ):
     """
     Load the corpus, split it into chunks, embed each chunk with OpenAI,
-    and index the result in a fresh in-memory Chroma vector store. Returns
-    the vector store. Every call creates a new collection, so students can
-    call build_index repeatedly in the same notebook without stale state.
+    and index the result in a fresh in-memory FAISS vector store. Returns
+    the vector store. Every call creates a new store, so students can call
+    build_index repeatedly in the same notebook without stale state.
     """
     docs = load_corpus(data_dir)
 
@@ -131,13 +130,7 @@ def build_index(
     chunks = splitter.split_documents(docs)
 
     embeddings = OpenAIEmbeddings(model=DEFAULT_EMBEDDING_MODEL)
-    collection_name = f"rag-{chunk_size}-{uuid.uuid4().hex[:8]}"
-
-    vectorstore = Chroma.from_documents(
-        documents=chunks,
-        embedding=embeddings,
-        collection_name=collection_name,
-    )
+    vectorstore = FAISS.from_documents(documents=chunks, embedding=embeddings)
 
     print(
         f"Indexed {len(chunks)} chunks "
@@ -149,7 +142,7 @@ def build_index(
 def search(index, question: str, k: int = 5) -> list:
     """
     Run the question against the vector store and return the raw list of
-    (Document, distance) pairs from Chroma. Lower distance means a closer
+    (Document, distance) pairs from FAISS. Lower distance means a closer
     match under L2 similarity.
     """
     return index.similarity_search_with_score(question, k=k)
