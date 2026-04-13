@@ -94,13 +94,39 @@ The same story runs through every chapter. Each technique you learn gets applied
 
 **What if I already know Python and want to run locally?** See the "Run this locally" section at the bottom. Everything works in a plain Jupyter setup with one `.env.local` file.
 
-**I finished all seven chapters. What next?** Point one of the techniques at your own company docs and share the before-and-after in your cohort Slack, or pair it with the Claude Code cohort at [skillagents.ai](https://skillagents.ai) to wire one of these pipelines into a real product.
+**I finished all seven chapters. What next?** Three options, in order of commitment: watch the full video series, join my live cohort on building AI products with Claude Code, or reach out for enterprise work and private cohorts. All three are in the next section.
 
 ## Who built this
 
-Rajesh P. Founder of SkillAgents AI and Codepup AI. Former PM at Zynga, Flipkart, and Walmart. This series is part of my Maven cohort "AI Coding for Product Managers".
+**Rajesh P**. Former PM at Zynga, Flipkart, and Walmart. Founder of [SkillAgents AI](https://skillagents.ai) and [Codepup AI](https://codepup.ai). I shipped about 80 percent of Codepup AI myself using Claude Code, with no dev background, and now I teach other product managers how to do the same.
 
-If you want to go deeper than notebooks, the cohort walks through building RAG inside a real product using Claude Code. Details at [skillagents.ai](https://skillagents.ai).
+You opened this repo to learn RAG. If you want to go further, pick the path that fits where you are right now.
+
+### Free. Watch the full RAG video series
+
+[SkillAgents AI on YouTube](https://www.youtube.com/channel/UCpDUOkGwK2q-NBWZgaH3adw)
+
+Every chapter in this repo pairs with a video that walks through the same concepts visually. Hooks, diagrams, animations. Roughly an hour for the full RAG series. If you liked the notebooks, watching the videos once makes the concepts stick a second time from a different angle. Subscribe and you will also catch the next series on agents, evaluation, and production AI for PMs.
+
+### Paid cohort. Live six weeks, AI Coding for Product Managers
+
+[Join on Maven](https://maven.com/rajeshpeko)
+
+A live cohort on building real products with Claude Code, taught for PMs and non-developers. This is the workflow I used to build Codepup AI as a solo non-dev founder. You bring a product idea. You leave with a working build, a repeatable workflow, and a cohort of peers shipping alongside you.
+
+This cohort is not about RAG. RAG is a narrow technical layer. The cohort covers the bigger picture of shipping an AI product end to end: prompt engineering, tool use, agents, evaluation, and the product decisions that sit around the code. If you liked how these notebooks are structured and you want a live version focused on product building, this is where to go next.
+
+### Limited engagements. Enterprise projects and private cohorts
+
+[Rajesh on LinkedIn](https://www.linkedin.com/in/rajeshpeko/)
+
+Two things I take on directly, in small numbers each quarter.
+
+**Enterprise projects.** Paid engagements to help a product team ship their first production RAG, agentic, or AI-native feature, working alongside me and your engineers for a few weeks. Good fit if your company is trying to turn "we should use AI somewhere" into something real in customer hands.
+
+**Private cohorts.** If your company, team, or community wants a dedicated live workshop on any AI or product management topic (RAG, agents, evaluation, shipping AI features, AI for product discovery, AI for PM workflows, building with Claude Code), reach out. I run private cohorts on request for groups of twenty to forty, tailored to your stack and your questions.
+
+For either one, message me on LinkedIn with one paragraph on what you are working on and we can take it from there.
 
 ## Run this locally
 
