@@ -119,6 +119,24 @@ def load_corpus(data_dir: str = "data/skillagents") -> list:
     return docs
 
 
+def make_chunks(
+    chunk_size: int = 500,
+    chunk_overlap: int = 50,
+    data_dir: str = "data/skillagents",
+) -> list:
+    """
+    Load the corpus and split it into chunks using RecursiveCharacterTextSplitter.
+    Returns the list of chunk Documents without building any index. Useful for
+    inspecting what the splitter actually produces before you embed and index.
+    """
+    docs = load_corpus(data_dir)
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+    )
+    return splitter.split_documents(docs)
+
+
 def build_index(
     chunk_size: int = 500,
     chunk_overlap: int = 50,
@@ -130,13 +148,11 @@ def build_index(
     the vector store. Every call creates a new store, so students can call
     build_index repeatedly in the same notebook without stale state.
     """
-    docs = load_corpus(data_dir)
-
-    splitter = RecursiveCharacterTextSplitter(
+    chunks = make_chunks(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
+        data_dir=data_dir,
     )
-    chunks = splitter.split_documents(docs)
 
     embeddings = OpenAIEmbeddings(model=DEFAULT_EMBEDDING_MODEL)
     vectorstore = FAISS.from_documents(documents=chunks, embedding=embeddings)
