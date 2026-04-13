@@ -24,7 +24,7 @@ Pro Annual includes access to every cohort that runs during your twelve months. 
 
 Price: $4,999 per year for up to five seats.
 
-Team includes everything in Pro Annual for each seat. On top of that, your team gets a private Slack channel inside the SkillAgents community and a quarterly manager debrief where Rajesh walks the manager through what the team learned and where they are getting stuck. It is the right plan for product managers at the same company who want to level up together.
+The Team plan is flat priced. You pay $4,999 whether you enroll four seats or five. Seats can be reassigned between team members once per quarter at no additional cost. Each seat includes everything in Pro Annual. Team-specific benefits such as the private Slack channel and the quarterly manager debrief are covered in the SkillAgents product guide. For invoice billing, purchase order terms, and company payment options, see the billing FAQ.
 
 ## Enterprise
 
