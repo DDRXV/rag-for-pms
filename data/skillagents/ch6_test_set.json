@@ -1,0 +1,35 @@
+{
+  "description": "Five-question evaluation test set for Chapter 6. Each entry has the user question, the ground truth answer (manually verified against the corpus), and the expected source filenames a retriever should pull.",
+  "questions": [
+    {
+      "id": "refund_policy",
+      "question": "What is the refund policy for annual plans on SkillAgents AI?",
+      "ground_truth": "SkillAgents AI gives a pro-rated refund for the remaining months of a Pro Annual plan, and deducts a 50 dollar processing fee from the refund amount. Refunds are processed back to the original payment method within two business days of the request.",
+      "expected_sources": ["refund_policy.pdf"]
+    },
+    {
+      "id": "cohort_schedule",
+      "question": "When does a new cohort start and what is the weekly schedule?",
+      "ground_truth": "A new cohort starts on the first Monday of every month. The weekly schedule has a Monday 8 AM Pacific live Zoom session with Rajesh for ninety minutes, homework on Tuesday through Thursday, and Friday 9 AM Pacific office hours for sixty minutes. Slack is always on for questions.",
+      "expected_sources": ["product_guide.md"]
+    },
+    {
+      "id": "payment_declined",
+      "question": "My payment failed with error code E-4012. What should I do?",
+      "ground_truth": "E-4012 means your bank declined the charge. Call your bank, ask them to approve SkillAgents AI as a merchant, and retry the payment. If the retry still fails, try a different card.",
+      "expected_sources": ["error_codes.md", "billing_faq.md"]
+    },
+    {
+      "id": "student_to_pro",
+      "question": "How do I switch from the Student plan to Pro Annual, and what does it cost?",
+      "ground_truth": "Go to Settings, Billing, Plan, and pick Upgrade to Pro Annual. You pay the difference between 499 dollars and 1499 dollars, which is 1000 dollars. Your cohort access does not reset and everything you have completed carries into the Pro Annual plan.",
+      "expected_sources": ["billing_faq.md"]
+    },
+    {
+      "id": "tax_invoice",
+      "question": "How do I get a proper tax invoice for my employer?",
+      "ground_truth": "Every payment generates a tax invoice as a PDF under Settings, Billing, Invoices. Each invoice includes the SkillAgents AI GSTIN, your billing address, the plan purchased, and the tax breakdown. If you need the billing name changed to your employer legal name, send the request to support before you pay so the first invoice is correct.",
+      "expected_sources": ["billing_faq.md"]
+    }
+  ]
+}

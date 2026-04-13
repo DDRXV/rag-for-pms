@@ -1105,3 +1105,733 @@ def show_hybrid_results(results, question: str | None = None, max_chars: int = 2
 
 
 # === end Chapter 4 helpers ===
+
+# === Chapter 5 helpers ===
+#
+# These helpers wrap Cohere Rerank so the Chapter 5 notebook can re-sort an
+# existing list of (Document, distance) results without introducing a new
+# data type. Everything stays as lists of (Document, score) tuples that the
+# rest of the shared helpers already know how to render.
+
+
+def rerank_with_cohere(
+    question: str,
+    results: list,
+    top_n: int = 3,
+    model: str = "rerank-english-v3.0",
+) -> list:
+    """
+    Re-sort a list of (Document, distance) results with Cohere Rerank.
+
+    Takes the output of `search()` and sends the question plus every document
+    text to Cohere's hosted cross-encoder. Cohere returns a relevance score
+    in the zero to one range for each document, where one is a perfect
+    match. This function returns a new list of (Document, relevance_score)
+    tuples sorted from highest to lowest relevance, keeping only the top_n.
+
+    The output shape matches `search()` so you can pass the result straight
+    into `show_results()` or `generate_answer()` without any adapter code.
+    Note that the score column now holds relevance scores from Cohere, not
+    L2 distances from FAISS. Higher is better here, the opposite of search().
+    """
+    # Local import so the rest of the notebooks never pay the cohere import
+    # cost when they are not using rerank.
+    import cohere
+
+    client = cohere.Client(api_key=os.environ.get("COHERE_API_KEY"))
+
+    documents = [doc.page_content for doc, _ in results]
+    response = client.rerank(
+        query=question,
+        documents=documents,
+        top_n=top_n,
+        model=model,
+    )
+
+    reranked: list = []
+    for item in response.results:
+        original_doc = results[item.index][0]
+        reranked.append((original_doc, float(item.relevance_score)))
+    return reranked
+
+
+def show_rerank_results(results, question: str | None = None, max_chars: int = 200):
+    """
+    Like show_results() but colored for Cohere relevance scores instead of
+    L2 distances. Higher relevance means a better match, so the gradient
+    runs green-high, red-low, the opposite of show_results(). Used to render
+    the output of rerank_with_cohere().
+    """
+    if question:
+        print(f"Question: {question}")
+
+    rows = []
+    for rank, (doc, score) in enumerate(results, start=1):
+        rows.append(
+            {
+                "rank": rank,
+                "source": doc.metadata.get("source", "unknown"),
+                "relevance": round(float(score), 4),
+                "preview": _clean_preview(doc.page_content, max_chars),
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    styled = (
+        df.style.background_gradient(
+            cmap="RdYlGn",
+            subset=["relevance"],
+        )
+        .set_properties(
+            subset=["preview"],
+            **{"text-align": "left", "white-space": "pre-wrap"},
+        )
+        .hide(axis="index")
+    )
+    return styled
+
+
+# === end Chapter 5 helpers ===
+
+# === Chapter 6 helpers ===
+#
+# Evaluation helpers built on RAGAS. The functions below hide the RAGAS
+# EvaluationDataset, judge LLM, and embeddings wiring so the notebook cells
+# stay three to ten lines long. ragas is imported lazily so earlier chapter
+# notebooks do not pay the import cost.
+
+
+_RAGAS_METRIC_COLUMNS = [
+    "faithfulness",
+    "answer_relevancy",
+    "context_precision",
+    "context_recall",
+]
+
+
+def show_test_set(questions: list[dict]):
+    """
+    Render the Chapter 6 test set as a styled pandas table. Each row has the
+    question id, the question text, the expected sources, and a short
+    preview of the ground truth answer so students can eyeball the whole set
+    at once.
+    """
+    rows = []
+    for q in questions:
+        rows.append(
+            {
+                "id": q.get("id", ""),
+                "question": q.get("question", ""),
+                "expected_sources": ", ".join(q.get("expected_sources", [])),
+                "ground_truth": _clean_preview(q.get("ground_truth", ""), 160),
+            }
+        )
+    df = pd.DataFrame(rows)
+    styled = (
+        df.style.set_properties(
+            subset=["question", "ground_truth"],
+            **{"text-align": "left", "white-space": "pre-wrap"},
+        )
+        .hide(axis="index")
+    )
+    return styled
+
+
+def _style_ragas_df(df):
+    """Apply a red to green gradient across the four RAGAS metric columns."""
+    metric_cols = [c for c in _RAGAS_METRIC_COLUMNS if c in df.columns]
+    # vmin=0 vmax=1 forces a stable color scale across runs, so students see
+    # the same green for 0.9 every time regardless of the per run min and max.
+    styled = df.style.background_gradient(
+        cmap="RdYlGn",
+        subset=metric_cols,
+        vmin=0.0,
+        vmax=1.0,
+    )
+    preview_cols = [c for c in ["user_input", "response", "reference"] if c in df.columns]
+    if preview_cols:
+        styled = styled.set_properties(
+            subset=preview_cols,
+            **{"text-align": "left", "white-space": "pre-wrap"},
+        )
+    styled = styled.format({c: "{:.3f}" for c in metric_cols}).hide(axis="index")
+    return styled
+
+
+def _build_ragas_samples(rows):
+    """Convert a list of dicts with question, contexts, answer, and ground_truth
+    into a ragas EvaluationDataset of SingleTurnSample objects."""
+    from ragas import EvaluationDataset
+    from ragas.dataset_schema import SingleTurnSample
+
+    samples = [
+        SingleTurnSample(
+            user_input=r["question"],
+            retrieved_contexts=list(r["contexts"]),
+            response=r["answer"],
+            reference=r["ground_truth"],
+        )
+        for r in rows
+    ]
+    return EvaluationDataset(samples=samples)
+
+
+def _ragas_metrics():
+    from ragas.metrics import (
+        faithfulness,
+        answer_relevancy,
+        context_precision,
+        context_recall,
+    )
+
+    return [faithfulness, answer_relevancy, context_precision, context_recall]
+
+
+def _wrapped_judge(model: str):
+    from ragas.llms import LangchainLLMWrapper
+    from ragas.embeddings import LangchainEmbeddingsWrapper
+
+    judge_llm = LangchainLLMWrapper(ChatOpenAI(model=model, temperature=0))
+    judge_embeddings = LangchainEmbeddingsWrapper(
+        OpenAIEmbeddings(model=DEFAULT_EMBEDDING_MODEL)
+    )
+    return judge_llm, judge_embeddings
+
+
+class _DisableLangsmith:
+    """
+    Context manager that turns LangSmith tracing off for the duration of a
+    RAGAS call. RAGAS makes dozens of LLM calls per row internally, and the
+    LangChain tracer prints a lot of warnings while they run. Disabling the
+    tracer on entry and restoring the prior value on exit keeps the notebook
+    readable without losing the trace on everything else.
+    """
+
+    def __enter__(self):
+        self._prev_tracing = os.environ.get("LANGCHAIN_TRACING_V2")
+        self._prev_endpoint = os.environ.get("LANGCHAIN_ENDPOINT")
+        os.environ["LANGCHAIN_TRACING_V2"] = "false"
+        os.environ["LANGCHAIN_ENDPOINT"] = ""
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self._prev_tracing is None:
+            os.environ.pop("LANGCHAIN_TRACING_V2", None)
+        else:
+            os.environ["LANGCHAIN_TRACING_V2"] = self._prev_tracing
+        if self._prev_endpoint is None:
+            os.environ.pop("LANGCHAIN_ENDPOINT", None)
+        else:
+            os.environ["LANGCHAIN_ENDPOINT"] = self._prev_endpoint
+
+
+def run_ragas_eval(
+    test_set: list[dict],
+    pipeline_fn,
+    judge_model: str = DEFAULT_CHAT_MODEL,
+):
+    """
+    Run a full RAGAS evaluation over a test set.
+
+    Parameters
+    ----------
+    test_set : list of dicts
+        Each entry must have keys "question" and "ground_truth". The
+        "expected_sources" key is optional and is ignored by RAGAS.
+    pipeline_fn : callable
+        Function that takes a question string and returns a tuple of
+        (contexts_list, answer_string). This is the RAG pipeline under test.
+    judge_model : str
+        Name of the chat model that RAGAS should use as its judge. Defaults
+        to gpt-4o-mini because it is cheap and stable.
+
+    Returns
+    -------
+    (styled_df, raw_df) : tuple
+        styled_df is a pandas Styler ready for display in a notebook, with
+        a red to green gradient across the metric columns. raw_df is the
+        plain numeric DataFrame for further computation.
+    """
+    from ragas import evaluate
+
+    rows = []
+    for entry in test_set:
+        question = entry["question"]
+        ground_truth = entry["ground_truth"]
+        contexts, answer = pipeline_fn(question)
+        rows.append(
+            {
+                "question": question,
+                "ground_truth": ground_truth,
+                "contexts": contexts,
+                "answer": answer,
+            }
+        )
+
+    dataset = _build_ragas_samples(rows)
+    judge_llm, judge_embeddings = _wrapped_judge(judge_model)
+
+    with _DisableLangsmith():
+        result = evaluate(
+            dataset=dataset,
+            metrics=_ragas_metrics(),
+            llm=judge_llm,
+            embeddings=judge_embeddings,
+            show_progress=False,
+        )
+
+    df = result.to_pandas()
+    return _style_ragas_df(df), df
+
+
+def score_single_sample(
+    question: str,
+    contexts: list[str],
+    answer: str,
+    ground_truth: str,
+    judge_model: str = DEFAULT_CHAT_MODEL,
+):
+    """
+    Score a single (question, contexts, answer, ground_truth) tuple with
+    RAGAS and return a styled DataFrame plus the raw DataFrame. Used for
+    the broken answer demo where the input is a single hand crafted row.
+    """
+    from ragas import evaluate
+
+    rows = [
+        {
+            "question": question,
+            "ground_truth": ground_truth,
+            "contexts": contexts,
+            "answer": answer,
+        }
+    ]
+    dataset = _build_ragas_samples(rows)
+    judge_llm, judge_embeddings = _wrapped_judge(judge_model)
+
+    with _DisableLangsmith():
+        result = evaluate(
+            dataset=dataset,
+            metrics=_ragas_metrics(),
+            llm=judge_llm,
+            embeddings=judge_embeddings,
+            show_progress=False,
+        )
+    df = result.to_pandas()
+    return _style_ragas_df(df), df
+
+
+def show_score_averages(df, label: str = "run"):
+    """
+    Compute mean scores across a RAGAS result DataFrame and render them as a
+    one row styled table with the same red to green gradient used on the
+    full scorecard. Missing metric columns are skipped silently.
+    """
+    metric_cols = [c for c in _RAGAS_METRIC_COLUMNS if c in df.columns]
+    averages = {c: round(float(df[c].mean()), 3) for c in metric_cols}
+    averages = {"run": label, **averages}
+    avg_df = pd.DataFrame([averages])
+    styled = (
+        avg_df.style.background_gradient(
+            cmap="RdYlGn",
+            subset=metric_cols,
+            vmin=0.0,
+            vmax=1.0,
+        )
+        .format({c: "{:.3f}" for c in metric_cols})
+        .hide(axis="index")
+    )
+    return styled
+
+
+# === end Chapter 6 helpers ===
+
+# === Chapter 7 helpers ===
+# Self-RAG (agentic RAG) helpers. Build a LangGraph state machine that
+# retrieves, generates, grades the answer for groundedness, and loops back on
+# failure. Max retries is bounded so the graph always terminates.
+#
+# Design notes the notebook depends on:
+#
+#   1. The grader scores the answer on a 1-5 integer scale. A score at or
+#      above the threshold passes. Below the threshold fails and triggers
+#      a retry.
+#
+#   2. The grader is explicitly told that refund_policy.pdf is the single
+#      authoritative source for refund questions in this corpus. If the
+#      answer conflicts with that source, the grader must fail it even if
+#      the rest of the context appears to support the answer. This is the
+#      conflict-aware check that catches the outdated blog post.
+#
+#   3. On retry, the rewriter prepends a reference to the official refund
+#      policy document to the query. That biases the vector search toward
+#      the authoritative PDF chunks and away from the outdated blog post.
+#
+#   4. run_self_rag prints a node-by-node trace as the graph runs so the
+#      notebook reader can see every step of the loop.
+
+
+def _authoritative_sources_for_question(question: str) -> list[str]:
+    """
+    Return the filenames this corpus treats as ground truth for the given
+    question. For the SkillAgents corpus, refund questions are grounded in
+    refund_policy.pdf. Other topics have no special authoritative source.
+    """
+    q = question.lower()
+    refund_words = ["refund", "cancel", "money back", "guarantee"]
+    if any(word in q for word in refund_words):
+        return ["refund_policy.pdf"]
+    return []
+
+
+def grade_answer(
+    question: str,
+    answer: str,
+    context_docs: list,
+    threshold: int = 4,
+    model: str = DEFAULT_CHAT_MODEL,
+) -> dict:
+    """
+    Ask an LLM to grade whether the answer is grounded in the retrieved
+    context and consistent with the authoritative source for the question.
+    Returns a dict with keys score (1 to 5), passed (bool), and reason.
+
+    The grader is shown three things: the question, the candidate answer,
+    and the retrieved passages. It is instructed that refund_policy.pdf is
+    the single source of truth for refund topics and that any answer which
+    conflicts with that source must receive a low score, even if other
+    retrieved passages appear to support it. This is how the loop catches
+    the stale blog post claim of a 30 day full refund.
+    """
+    authoritative = _authoritative_sources_for_question(question)
+
+    context_block_parts = []
+    for i, doc in enumerate(context_docs, start=1):
+        src = doc.metadata.get("source", "unknown")
+        mark = " [AUTHORITATIVE]" if src in authoritative else ""
+        context_block_parts.append(
+            f"Passage {i} from {src}{mark}:\n{doc.page_content}"
+        )
+    context_block = "\n\n---\n\n".join(context_block_parts)
+
+    authoritative_note = ""
+    if authoritative:
+        authoritative_note = (
+            "For this question, the single source of truth is "
+            f"{', '.join(authoritative)}. If the candidate answer conflicts "
+            "with that source, score it 1 or 2 even if other passages seem "
+            "to support the answer. Outdated blog posts, announcements, and "
+            "marketing copy are not authoritative.\n\n"
+        )
+
+    system = (
+        "You are a strict grader for a retrieval augmented generation "
+        "pipeline. You score whether a candidate answer is grounded in the "
+        "retrieved passages and consistent with the authoritative source. "
+        "You respond with a single integer from 1 to 5 followed by a short "
+        "reason on the next line. "
+        "5 means fully grounded and consistent with the authoritative source. "
+        "4 means grounded with minor gaps. "
+        "3 means partially grounded. "
+        "2 means the answer conflicts with the authoritative source on a "
+        "material point. "
+        "1 means the answer is unsupported or contradicted by the "
+        "authoritative source."
+    )
+    user = (
+        f"{authoritative_note}"
+        f"Question: {question}\n\n"
+        f"Candidate answer:\n{answer}\n\n"
+        f"Retrieved passages:\n{context_block}\n\n"
+        "Score the answer on a 1 to 5 scale. First line is the integer. "
+        "Second line is a one sentence reason."
+    )
+
+    llm = _chat(model=model, temperature=0.0)
+    response = llm.invoke(
+        [SystemMessage(content=system), HumanMessage(content=user)]
+    ).content.strip()
+
+    lines = [line.strip() for line in response.splitlines() if line.strip()]
+    score = 1
+    reason = response
+    if lines:
+        first = lines[0].split()[0] if lines[0] else "1"
+        try:
+            score = int(first)
+        except ValueError:
+            score = 1
+        if len(lines) > 1:
+            reason = lines[1]
+        else:
+            reason = lines[0]
+
+    score = max(1, min(5, score))
+    return {
+        "score": score,
+        "passed": score >= threshold,
+        "reason": reason,
+    }
+
+
+def rewrite_for_authoritative_source(
+    question: str,
+    prior_answer: str,
+    reason: str,
+    model: str = DEFAULT_CHAT_MODEL,
+) -> str:
+    """
+    Rewrite the original question so the next retrieval prefers the
+    authoritative source in the corpus. For refund questions, the rewrite
+    explicitly names refund_policy.pdf so the embedding model lands on
+    official policy chunks instead of the outdated marketing blog post.
+    """
+    authoritative = _authoritative_sources_for_question(question)
+    source_hint = (
+        f"the official document named {authoritative[0]}"
+        if authoritative
+        else "the official authoritative policy document"
+    )
+
+    system = (
+        "You rewrite a user question so that a vector search retrieves the "
+        "official authoritative document instead of outdated marketing or "
+        "blog content. Keep the user intent intact. Add explicit references "
+        "to the official policy source. Return only the rewritten question."
+    )
+    user = (
+        f"Original question: {question}\n\n"
+        f"The previous answer was flagged as ungrounded. Reason: {reason}\n\n"
+        f"Rewrite the question so that retrieval prefers {source_hint}. "
+        "Include the phrase 'according to the official refund policy document' "
+        "when the question is about refunds, cancellations, or money back."
+    )
+    response = _chat(model=model, temperature=0.0).invoke(
+        [SystemMessage(content=system), HumanMessage(content=user)]
+    )
+    return response.content.strip().strip('"').strip("'")
+
+
+def _authoritative_biased_search(
+    index,
+    question: str,
+    k: int = 3,
+    authoritative_sources: list[str] | None = None,
+):
+    """
+    Retrieve k results, but if any authoritative sources are named for the
+    question, fetch a wider pool first (k * 3) and promote authoritative
+    chunks to the top. This gives the loop a concrete second chance on the
+    retry step without changing the chunking, the embedding, or the index.
+    """
+    if not authoritative_sources:
+        return index.similarity_search_with_score(question, k=k)
+
+    wide = index.similarity_search_with_score(question, k=k * 3)
+    auth = [(d, s) for d, s in wide if d.metadata.get("source") in authoritative_sources]
+    other = [(d, s) for d, s in wide if d.metadata.get("source") not in authoritative_sources]
+    # Prefer authoritative chunks first, then fill with the best of the rest.
+    merged = auth + other
+    return merged[:k]
+
+
+def build_self_rag_graph(
+    index,
+    max_retries: int = 2,
+    grader_threshold: int = 4,
+    k: int = 3,
+):
+    """
+    Build a compiled LangGraph self-RAG state machine over the given FAISS
+    index. The graph has four nodes: retrieve, generate, grade, and rewrite.
+    The edge from grade is conditional: pass routes to END, fail routes to
+    rewrite which then loops back to retrieve. The loop is bounded by
+    max_retries so the graph always terminates.
+
+    Returns a compiled graph that run_self_rag can stream.
+    """
+    from typing import TypedDict
+    from langgraph.graph import StateGraph, END
+
+    class SelfRAGState(TypedDict, total=False):
+        question: str
+        current_query: str
+        retries: int
+        retrieved: list
+        answer: str
+        score: int
+        passed: bool
+        reason: str
+        trace: list
+
+    def retrieve_node(state: SelfRAGState) -> SelfRAGState:
+        q = state["current_query"]
+        # On a retry the query has been rewritten to prefer the official
+        # source, so bias the retriever toward the authoritative document.
+        on_retry = state.get("retries", 0) > 0
+        sources = (
+            _authoritative_sources_for_question(state["question"]) if on_retry else []
+        )
+        results = _authoritative_biased_search(
+            index,
+            q,
+            k=k,
+            authoritative_sources=sources,
+        )
+        docs = [d for d, _ in results]
+        trace = state.get("trace", []) + [
+            {
+                "node": "retrieve",
+                "attempt": state.get("retries", 0) + 1,
+                "query": q,
+                "top_sources": [d.metadata.get("source", "unknown") for d in docs],
+            }
+        ]
+        return {"retrieved": docs, "trace": trace}
+
+    def generate_node(state: SelfRAGState) -> SelfRAGState:
+        docs = state["retrieved"]
+        context = "\n\n---\n\n".join(d.page_content for d in docs)
+        system = (
+            "You answer questions using only the provided context. "
+            "If the context does not contain the answer, say so plainly. "
+            "Be concise. Include specific numbers and clauses when they exist."
+        )
+        user = f"Context:\n{context}\n\nQuestion: {state['question']}"
+        llm = _chat(temperature=0.0)
+        answer = llm.invoke(
+            [SystemMessage(content=system), HumanMessage(content=user)]
+        ).content.strip()
+        trace = state.get("trace", []) + [
+            {
+                "node": "generate",
+                "attempt": state.get("retries", 0) + 1,
+                "answer": answer,
+            }
+        ]
+        return {"answer": answer, "trace": trace}
+
+    def grade_node(state: SelfRAGState) -> SelfRAGState:
+        verdict = grade_answer(
+            state["question"],
+            state["answer"],
+            state["retrieved"],
+            threshold=grader_threshold,
+        )
+        trace = state.get("trace", []) + [
+            {
+                "node": "grade",
+                "attempt": state.get("retries", 0) + 1,
+                "score": verdict["score"],
+                "passed": verdict["passed"],
+                "reason": verdict["reason"],
+            }
+        ]
+        return {
+            "score": verdict["score"],
+            "passed": verdict["passed"],
+            "reason": verdict["reason"],
+            "trace": trace,
+        }
+
+    def rewrite_node(state: SelfRAGState) -> SelfRAGState:
+        new_query = rewrite_for_authoritative_source(
+            state["question"],
+            state.get("answer", ""),
+            state.get("reason", ""),
+        )
+        trace = state.get("trace", []) + [
+            {
+                "node": "rewrite",
+                "attempt": state.get("retries", 0) + 1,
+                "new_query": new_query,
+            }
+        ]
+        return {
+            "current_query": new_query,
+            "retries": state.get("retries", 0) + 1,
+            "trace": trace,
+        }
+
+    def route_after_grade(state: SelfRAGState) -> str:
+        if state.get("passed"):
+            return "done"
+        if state.get("retries", 0) >= max_retries:
+            return "done"
+        return "retry"
+
+    graph = StateGraph(SelfRAGState)
+    graph.add_node("retrieve", retrieve_node)
+    graph.add_node("generate", generate_node)
+    graph.add_node("grade", grade_node)
+    graph.add_node("rewrite", rewrite_node)
+
+    graph.set_entry_point("retrieve")
+    graph.add_edge("retrieve", "generate")
+    graph.add_edge("generate", "grade")
+    graph.add_conditional_edges(
+        "grade",
+        route_after_grade,
+        {"done": END, "retry": "rewrite"},
+    )
+    graph.add_edge("rewrite", "retrieve")
+
+    return graph.compile()
+
+
+def run_self_rag(graph, question: str) -> dict:
+    """
+    Run a compiled self-RAG graph on a question. Prints a node-by-node
+    trace as the graph executes so the notebook reader can watch the loop.
+    Returns the final state, including the answer, score, retry count, and
+    the full trace list.
+    """
+    initial = {
+        "question": question,
+        "current_query": question,
+        "retries": 0,
+        "trace": [],
+    }
+
+    print(f"Question: {question}")
+    print("=" * 70)
+
+    final_state: dict = {
+        "question": question,
+        "current_query": question,
+        "retries": 0,
+    }
+    for event in graph.stream(initial):
+        for node_name, node_output in event.items():
+            trace = node_output.get("trace") or []
+            last = trace[-1] if trace else {}
+            attempt = last.get("attempt", "?")
+            if node_name == "retrieve":
+                print(f"[attempt {attempt}] retrieve")
+                print(f"  query: {last.get('query', '')}")
+                print(f"  top sources: {last.get('top_sources', [])}")
+            elif node_name == "generate":
+                answer = last.get("answer", "")
+                preview = answer if len(answer) < 220 else answer[:217] + "..."
+                print(f"[attempt {attempt}] generate")
+                print(f"  answer: {preview}")
+            elif node_name == "grade":
+                verdict = "PASS" if last.get("passed") else "FAIL"
+                print(
+                    f"[attempt {attempt}] grade -> score {last.get('score')} [{verdict}]"
+                )
+                print(f"  reason: {last.get('reason', '')}")
+            elif node_name == "rewrite":
+                print(f"[attempt {attempt}] rewrite")
+                print(f"  new query: {last.get('new_query', '')}")
+            print()
+            final_state.update(node_output)
+
+    print("=" * 70)
+    print(f"Final answer: {final_state.get('answer', '')}")
+    print(
+        f"Final score: {final_state.get('score')}  "
+        f"retries used: {final_state.get('retries', 0)}"
+    )
+    return final_state
+# === end Chapter 7 helpers ===
