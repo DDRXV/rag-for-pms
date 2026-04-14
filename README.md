@@ -27,8 +27,8 @@ Open in Colab with one click. Each notebook runs against the same SkillAgents AI
 
 | # | Chapter | Open in Colab | What you will build |
 |---|---|---|---|
-| 01 | **Chunking** | [![Open](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/DDRXV/rag-for-pms/blob/main/chapters/01_chunking.ipynb) | Split a refund policy two ways. One number change drops the retrieval distance from 0.80 to 0.60 and flips the LLM answer from verbose textbook to one clean production sentence. |
-| 02 | **Query Translation** | [![Open](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/DDRXV/rag-for-pms/blob/main/chapters/02_query_translation.ipynb) | Take a vague question and rewrite it into three specific ones. Watch retrieval scores go from 1.14 (off topic) to 0.41 (confident) and the answer cover pricing, plans, trial, and refund policy in one paragraph. |
+| 01 | **Chunking** | [![Open](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/DDRXV/rag-for-pms/blob/main/chapters/01_chunking.ipynb) | Split a long employee handbook two ways on the same parental leave question. One number change moves the cosine similarity from 0.57 (weak, handbook averaged into one embedding) to 0.86 (strong, parental leave section isolated). Every knob is visible on the page: splitter class, embedding model, FAISS distance strategy. |
+| 02 | **Query Translation** | [![Open](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/DDRXV/rag-for-pms/blob/main/chapters/02_query_translation.ipynb) | Take a vague question and rewrite it into three specific ones. Watch cosine similarity go from 0.43 (direct search, weak) to 0.80 (multi-query, confident) and the answer cover pricing, plans, trial, and refund policy in one paragraph. |
 | 03 | **Routing** | [![Open](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/DDRXV/rag-for-pms/blob/main/chapters/03_routing.ipynb) | Send "What is our refund policy" to the doc store, "What was Q3 revenue" to a pandas table, "Who reports to Dan" to an org graph. Same pipeline, three routes, three correct answers. |
 | 04 | **Hybrid Search** | [![Open](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/DDRXV/rag-for-pms/blob/main/chapters/04_hybrid_search.ipynb) | Combine BM25 keyword search with vector search so error code E-7829 actually gets found. Watch the alpha sweep flip the answer at each step. |
 | 05 | **Re-ranking** | [![Open](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/DDRXV/rag-for-pms/blob/main/chapters/05_reranking.ipynb) | Run Cohere Rerank on top of vector search. Watch the correct refund clause jump from rank 4 to rank 1, and the LLM answer flip from the outdated blog post to the real policy. |
@@ -66,19 +66,20 @@ Every chapter loads the same set of SkillAgents AI documents. SkillAgents AI is 
 
 ```
 data/skillagents/
-├── refund_policy.pdf              Current cohort refund terms. Anchor of Chapters 1, 5, and 7.
+├── refund_policy.pdf              Current cohort refund terms. Anchor of Chapters 5 and 7.
 ├── pricing.pdf                    Plan tiers and prices. Used by the routing and hybrid chapters.
 ├── product_guide.md               How SkillAgents cohorts actually run. Long form reference.
 ├── billing_faq.md                 Common billing questions.
 ├── error_codes.md                 Payment and enrollment error codes. Anchor of the hybrid search chapter.
 ├── outdated_blog_post.md          Stale marketing post that contradicts the current policy. Anchor of the agentic RAG chapter.
+├── ch1_skillagents_handbook.md    Internal employee handbook, ten HR sections. Anchor of the chunking chapter.
 ├── ch3_revenue.csv                Quarterly revenue by segment. Used as the SQL-ish route in Chapter 3.
 ├── ch3_org_chart.py               Mock org chart adjacency dict. Used as the graph route in Chapter 3.
 ├── ch5_refund_quick_answers.md    Short decoy FAQ that points at the authoritative policy. Used in Chapter 5.
 └── ch6_test_set.json              Five golden question-answer pairs for Chapter 6 RAGAS evaluation.
 ```
 
-The same story runs through every chapter. Each technique you learn gets applied to the same data, so you see how each one changes the same outcome.
+Chapter 1 loads the full set, including its own handbook. Chapters 2 through 7 load everything except the handbook so that the Chapter 1 content does not skew their retrieval pools (for example, it would shift BM25 inverse-document-frequency statistics in Chapter 4). Each technique you learn gets applied to the same data, so you see how each one changes the same outcome.
 
 ## FAQ
 
