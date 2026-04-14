@@ -83,11 +83,21 @@ def get_keys() -> None:
     print(f"Keys loaded. {tracing_status}")
 
 
-def load_corpus(data_dir: str = "data/skillagents") -> list:
+def load_corpus(
+    data_dir: str = "data/skillagents",
+    exclude_prefixes: list[str] | None = None,
+) -> list:
     """
     Load every .pdf and .md file from data_dir as LangChain Documents.
     PDFs go through PyPDFLoader. Markdown files go through TextLoader.
     Each document has metadata['source'] set to the filename only.
+
+    Pass exclude_prefixes to skip files whose filenames start with any of the
+    given prefixes. This is useful when a chapter needs a tighter retrieval
+    pool and wants to leave out docs that exist only for another chapter.
+    For example, Chapter 4 passes exclude_prefixes=['ch1_'] to keep the long
+    Chapter 1 handbook out of its BM25 index, which would otherwise shift
+    inverse-document-frequency statistics and perturb the alpha sweep lesson.
     """
     path = Path(data_dir)
     if not path.is_absolute():
@@ -99,8 +109,12 @@ def load_corpus(data_dir: str = "data/skillagents") -> list:
             "Make sure you have cloned the repo and changed into its root."
         )
 
+    exclude_prefixes = exclude_prefixes or []
+
     docs: list = []
     for file in sorted(path.iterdir()):
+        if exclude_prefixes and any(file.name.startswith(p) for p in exclude_prefixes):
+            continue
         if file.suffix == ".pdf":
             pages = PyPDFLoader(str(file)).load()
             combined_text = "\n\n".join(p.page_content for p in pages)
@@ -124,13 +138,15 @@ def make_chunks(
     chunk_size: int = 500,
     chunk_overlap: int = 50,
     data_dir: str = "data/skillagents",
+    exclude_prefixes: list[str] | None = None,
 ) -> list:
     """
     Load the corpus and split it into chunks using RecursiveCharacterTextSplitter.
     Returns the list of chunk Documents without building any index. Useful for
     inspecting what the splitter actually produces before you embed and index.
+    Pass exclude_prefixes to leave out chapter-specific files from the pool.
     """
-    docs = load_corpus(data_dir)
+    docs = load_corpus(data_dir, exclude_prefixes=exclude_prefixes)
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
@@ -142,6 +158,7 @@ def build_index(
     chunk_size: int = 500,
     chunk_overlap: int = 50,
     data_dir: str = "data/skillagents",
+    exclude_prefixes: list[str] | None = None,
 ):
     """
     Load the corpus, split it into chunks, embed each chunk with OpenAI,
@@ -155,11 +172,14 @@ def build_index(
     So when we call similarity_search_with_score, the returned score is the
     cosine similarity in the range zero to one, where one means a perfect
     semantic match and zero means unrelated.
+
+    Pass exclude_prefixes to leave out chapter-specific files from the pool.
     """
     chunks = make_chunks(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
         data_dir=data_dir,
+        exclude_prefixes=exclude_prefixes,
     )
 
     embeddings = OpenAIEmbeddings(model=DEFAULT_EMBEDDING_MODEL)
