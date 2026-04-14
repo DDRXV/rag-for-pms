@@ -25,6 +25,7 @@ from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_community.vectorstores import FAISS
+from langchain_community.vectorstores.utils import DistanceStrategy
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 
@@ -147,6 +148,13 @@ def build_index(
     and index the result in a fresh in-memory FAISS vector store. Returns
     the vector store. Every call creates a new store, so students can call
     build_index repeatedly in the same notebook without stale state.
+
+    The index uses MAX_INNER_PRODUCT as its distance strategy. OpenAI's
+    text-embedding-3-small returns unit-normalized vectors, and the inner
+    product of two unit vectors is the cosine of the angle between them.
+    So when we call similarity_search_with_score, the returned score is the
+    cosine similarity in the range zero to one, where one means a perfect
+    semantic match and zero means unrelated.
     """
     chunks = make_chunks(
         chunk_size=chunk_size,
@@ -155,7 +163,11 @@ def build_index(
     )
 
     embeddings = OpenAIEmbeddings(model=DEFAULT_EMBEDDING_MODEL)
-    vectorstore = FAISS.from_documents(documents=chunks, embedding=embeddings)
+    vectorstore = FAISS.from_documents(
+        documents=chunks,
+        embedding=embeddings,
+        distance_strategy=DistanceStrategy.MAX_INNER_PRODUCT,
+    )
 
     print(
         f"Indexed {len(chunks)} chunks "
@@ -166,9 +178,11 @@ def build_index(
 
 def search(index, question: str, k: int = 5) -> list:
     """
-    Run the question against the vector store and return the raw list of
-    (Document, distance) pairs from FAISS. Lower distance means a closer
-    match under L2 similarity.
+    Run the question against the vector store and return a list of
+    (Document, similarity) pairs. The similarity is cosine similarity in
+    the range zero to one. Higher is better. A score close to one means
+    the chunk is a near perfect semantic match for the question. A score
+    close to zero means the chunk is unrelated.
     """
     return index.similarity_search_with_score(question, k=k)
 
@@ -182,9 +196,10 @@ def _clean_preview(text: str, max_chars: int) -> str:
 
 def show_results(results, question: str | None = None, max_chars: int = 200):
     """
-    Turn a list of (Document, distance) pairs into a styled pandas table.
-    Columns: rank, source, score, preview. The score column uses a green
-    to red gradient where green is the closest match (lowest L2 distance).
+    Turn a list of (Document, similarity) pairs into a styled pandas table.
+    Columns: rank, source, similarity, preview. The similarity column uses
+    a red to green gradient where green is the closest match (highest
+    cosine similarity, near 1.0) and red is the weakest match (closer to 0).
     """
     if question:
         print(f"Question: {question}")
@@ -195,7 +210,7 @@ def show_results(results, question: str | None = None, max_chars: int = 200):
             {
                 "rank": rank,
                 "source": doc.metadata.get("source", "unknown"),
-                "score": round(float(score), 3),
+                "similarity": round(float(score), 3),
                 "preview": _clean_preview(doc.page_content, max_chars),
             }
         )
@@ -203,8 +218,10 @@ def show_results(results, question: str | None = None, max_chars: int = 200):
     df = pd.DataFrame(rows)
     styled = (
         df.style.background_gradient(
-            cmap="RdYlGn_r",
-            subset=["score"],
+            cmap="RdYlGn",
+            subset=["similarity"],
+            vmin=0.0,
+            vmax=1.0,
         )
         .set_properties(
             subset=["preview"],
@@ -347,10 +364,12 @@ def multi_query_search(
         for doc, score in index.similarity_search_with_score(q, k=k):
             key = (doc.metadata.get("source", "unknown"), doc.page_content[:120])
             existing = seen.get(key)
-            if existing is None or score < existing[1]:
+            # Higher cosine similarity wins. Keep the best score per unique chunk.
+            if existing is None or score > existing[1]:
                 seen[key] = (doc, float(score))
 
-    merged = sorted(seen.values(), key=lambda pair: pair[1])
+    # Sort descending by similarity so the best match is first.
+    merged = sorted(seen.values(), key=lambda pair: -pair[1])
     return variants, merged
 
 
@@ -1034,10 +1053,10 @@ def hybrid_search(
 def show_bm25_results(results, question: str | None = None, max_chars: int = 200):
     """
     Pretty-print a BM25 result list as a pandas table. BM25 scores are
-    rewards, not distances, so the gradient is flipped compared to
-    show_results: green is the highest score (best match) and red is the
-    lowest. Shape matches show_results so the notebook can place the two
-    tables side by side.
+    rewards where higher means a better match, so green is the top score
+    and red is the bottom. This matches show_results now that show_results
+    also uses cosine similarity (higher is better). Shape matches
+    show_results so the notebook can place the two tables side by side.
     """
     if question:
         print(f"Question: {question}")
@@ -1621,7 +1640,7 @@ def _authoritative_biased_search(
     """
     Retrieve k results. If any authoritative sources are named for the
     question, fetch a much wider pool (k * 10) and filter down to only the
-    authoritative chunks, returning the top k by distance from those. This
+    authoritative chunks, returning the top k by similarity from those. This
     guarantees the loop sees a focused authoritative context on retry, with
     no stale documents or decoy FAQs mixed in.
 
